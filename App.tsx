@@ -217,7 +217,10 @@ const App: React.FC = () => {
     const [isFileTranscriptComplete, setIsFileTranscriptComplete] = useState(false);
     const [modalInfo, setModalInfo] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
     const [recoveryInfo, setRecoveryInfo] = useState<{ show: boolean, chunkCount: number }>({ show: false, chunkCount: 0 });
-
+    
+    // ▼▼▼ 改良点1：清書中の状態を管理するstateを追加 ▼▼▼
+    const [isRefining, setIsRefining] = useState<boolean>(false);
+    
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
@@ -231,6 +234,9 @@ const App: React.FC = () => {
     const audioContextRef = useRef<AudioContext | null>(null);
     const analyserRef = useRef<AnalyserNode | null>(null);
     const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+    // ▼▼▼ 改良点2：ファイル処理の中断フラグを追加 ▼▼▼
+    const cancelFileUploadRef = useRef<boolean>(false);
 
     useEffect(() => {
         const checkForCrashedData = async () => {
@@ -421,9 +427,13 @@ const App: React.FC = () => {
         setShowStopConfirm(false);
     };
 
+    // ▼▼▼ 改良点2：関数を修正 ▼▼▼
     const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
+
+        // 中断フラグをリセット
+        cancelFileUploadRef.current = false;
 
         setTranscript([]);
         setSummary('');
@@ -443,8 +453,9 @@ const App: React.FC = () => {
             let currentTime = 0;
             let chunkCount = 1;
             const totalChunks = Math.ceil(duration / chunkSizeInSeconds);
-
-            while (currentTime < duration) {
+            
+            // ループ条件に中断フラグを追加
+            while (currentTime < duration && !cancelFileUploadRef.current) {
                 setLoadingMessage(`初期文字起こし中... (${chunkCount}/${totalChunks})`);
                 const startTime = currentTime;
                 const endTime = Math.min(currentTime + chunkSizeInSeconds, duration);
@@ -456,33 +467,54 @@ const App: React.FC = () => {
                 }
                 const wavChunkBlob = bufferToWav(chunkBuffer);
                 const transcribedText = await transcribeFileRaw(wavChunkBlob);
-                setTranscript(prev => [...prev, {time: startTime, text: transcribedText}]);
+                
+                // 中断されていたら結果をセットしない
+                if (!cancelFileUploadRef.current) {
+                    setTranscript(prev => [...prev, {time: startTime, text: transcribedText}]);
+                }
                 
                 currentTime += chunkSizeInSeconds;
                 chunkCount++;
                 
-                if(currentTime < duration) {
+                if(currentTime < duration && !cancelFileUploadRef.current) {
                     await new Promise(resolve => setTimeout(resolve, 5000));
                 }
             }
-            setIsFileTranscriptComplete(true);
-            setModalInfo({ show: true, message: 'ファイルからの初期文字起こしが完了しました。「AIで清書する」ボタンで、メモの内容を反映した清書ができます。'});
+            // 正常に完了した場合のみ完了フラグを立てる
+            if (!cancelFileUploadRef.current) {
+                setIsFileTranscriptComplete(true);
+                setModalInfo({ show: true, message: 'ファイルからの初期文字起こしが完了しました。「AIで清書する」ボタンで、メモの内容を反映した清書ができます。'});
+            }
+            
         } catch (error) {
             console.error("ファイル処理中にエラー:", error);
-            setModalInfo({ show: true, message: 'ファイルの処理中にエラーが発生しました。お使いのブラウザが対応していない音声形式の可能性があります。'});
+            // 中断によるエラーでない場合のみエラーメッセージを表示
+            if (!cancelFileUploadRef.current) {
+                 setModalInfo({ show: true, message: 'ファイルの処理中にエラーが発生しました。お使いのブラウザが対応していない音声形式の可能性があります。'});
+            }
         } finally {
+            // 中断された場合はポップアップを表示
+            if (cancelFileUploadRef.current) {
+                setModalInfo({ show: true, message: '文字起こしを停止しました。' });
+            }
             setIsTranscribing(false);
             setLoadingMessage('AI準備完了');
         }
     };
+    
+    // ▼▼▼ 改良点2：中断処理用の関数を追加 ▼▼▼
+    const handleCancelFileUpload = () => {
+        cancelFileUploadRef.current = true;
+    };
 
+
+    // ▼▼▼ 改良点1：関数を修正 ▼▼▼
     const handleRefineTranscript = async () => {
         if(transcript.length === 0) {
             setModalInfo({ show: true, message: '清書する文字起こしデータがありません。'});
             return;
         }
-        setIsTranscribing(true);
-        setLoadingMessage('AIが清書中です...');
+        setIsRefining(true); // 清書開始
         try {
             const rawTranscript = transcript.map(t => t.text).join('\n');
             const refinedText = await refineTranscriptWithMemo(rawTranscript, memoText);
@@ -500,8 +532,7 @@ const App: React.FC = () => {
         } catch (error) {
             setModalInfo({ show: true, message: 'AIによる清書中にエラーが発生しました。'});
         } finally {
-            setIsTranscribing(false);
-            setLoadingMessage('AI準備完了');
+            setIsRefining(false); // 清書終了
             setIsFileTranscriptComplete(false);
         }
     };
@@ -613,6 +644,7 @@ const App: React.FC = () => {
         audio { filter: ${isDarkMode ? 'invert(1) contrast(0.8) brightness(1.2)' : 'none'}; }
     `;
 
+    // ▼▼▼ このreturnの中（JSX）のボタン部分を修正 ▼▼▼
     return (
         <>
             <style>{customStyles}</style>
@@ -637,8 +669,21 @@ const App: React.FC = () => {
                         {isRecording ? '■ 録音停止' : (loadingMessage !== 'AI準備完了' ? loadingMessage : '● 録音開始')}
                     </button>
                     <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".mp3,.m4a,.wav" style={{ display: 'none' }} />
-                    <button onClick={() => fileInputRef.current?.click()} disabled={(loadingMessage !== 'AI準備完了') || isRecording} style={{ fontSize: '16px', padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', flex: 1 }}>
-                        音声ファイルを読み込む
+                    <button 
+                        onClick={isTranscribing && !isRecording ? handleCancelFileUpload : () => fileInputRef.current?.click()} 
+                        disabled={(loadingMessage !== 'AI準備完了' && !isTranscribing) || isRecording} 
+                        style={{ 
+                            fontSize: '16px', 
+                            padding: '10px 20px', 
+                            backgroundColor: isTranscribing && !isRecording ? '#dc3545' : '#6c757d', 
+                            color: 'white', 
+                            border: 'none', 
+                            borderRadius: '5px', 
+                            cursor: 'pointer', 
+                            flex: 1 
+                        }}
+                    >
+                        {isTranscribing && !isRecording ? '■ 処理を停止' : '音声ファイルを読み込む'}
                     </button>
                 </div>
                 
@@ -671,8 +716,19 @@ const App: React.FC = () => {
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: '10px'}}>
                             <h2 style={{ marginTop: '10px', marginBottom: '10px' }}>文字起こし結果</h2>
                             {!isRecording && transcript.length > 0 && !isTranscribing && (
-                                <button onClick={handleRefineTranscript} style={{fontSize: '14px', padding: '8px 16px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>
-                                    AIで清書する
+                                <button 
+                                    onClick={handleRefineTranscript} 
+                                    disabled={isRefining}
+                                    style={{
+                                        fontSize: '14px', 
+                                        padding: '8px 16px', 
+                                        backgroundColor: isRefining ? '#6c757d' : '#28a745', 
+                                        color: 'white', 
+                                        border: 'none', 
+                                        borderRadius: '5px', 
+                                        cursor: 'pointer' 
+                                    }}>
+                                    {isRefining ? '清書中です...' : 'AIで清書する'}
                                 </button>
                             )}
                             <button onClick={() => handleDownload(transcript.map(t => `${formatTime(t.time)} ${t.text}`).join('\n\n'), `transcript-${new Date().toISOString().slice(0, 10)}.txt`)} disabled={transcript.length === 0} style={{fontSize: '14px', padding: '8px 16px', backgroundColor: transcript.length === 0 ? '#6c757d' : '#6f42c1', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>
@@ -691,7 +747,7 @@ const App: React.FC = () => {
                                 <p>{isTranscribing ? '' : 'ここに高精度AIによる文字起こし結果がリアルタイムで表示されます...'}</p>
                             )}
                             {isRecording && isTranscribing && ( <p style={{margin: '0 0 10px 0', color: '#888'}}> <span className="timestamp">{formatTime((Date.now() - recordingStartTimeRef.current)/1000)}</span> （AIが考えています...） </p> )}
-                            {!isRecording && isTranscribing && ( <p style={{margin: '0 0 10px 0', color: '#888'}}> {loadingMessage} </p> )}
+                            {!isRecording && isTranscribing && !isRefining && ( <p style={{margin: '0 0 10px 0', color: '#888'}}> {loadingMessage} </p> )}
                         </div>
                     </TabPanel>
                     
