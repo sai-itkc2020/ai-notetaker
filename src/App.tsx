@@ -154,10 +154,11 @@ const App: React.FC = () => {
 
     const loadFFmpeg = async () => {
         const ffmpeg = ffmpegRef.current;
+        const baseURL = new URL(window.location.href).origin;
         try {
             await ffmpeg.load({
-                coreURL: '/ffmpeg-core.js',
-                wasmURL: '/ffmpeg-core.wasm',
+                coreURL: `${baseURL}/ffmpeg-core.js`,
+                wasmURL: `${baseURL}/ffmpeg-core.wasm`,
             });
             setLoadingMessage('AI準備完了');
         } catch (error) {
