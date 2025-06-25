@@ -348,6 +348,7 @@ const App: React.FC = () => {
         dbManager.clearAudioChunks();
     };
 
+
     const handleRefineTranscript = async () => {
         if (transcript.length === 0) {
             setModalInfo({ show: true, message: '清書する文字起こしデータがありません。'});
@@ -536,8 +537,8 @@ const App: React.FC = () => {
                             </button>
                         </div>
                         <div className="transcript-panel">
-                           {isLoadingAI ? (<p>{loadingMessage}</p>) : 
-                               (transcript.length > 0 ? (
+                           {isLoadingAI ? <p>{loadingMessage}</p> : (
+                               transcript.length > 0 ? (
                                 transcript.map((item, index) => (
                                    <p key={index} style={{margin: '0 0 10px 0'}}>
                                        <span className="timestamp" onClick={() => handleTimestampClick(item.time)}> {formatTime(item.time)} </span>
