@@ -4,7 +4,7 @@ import { Tab, Tabs, TabList, TabPanel } from 'react-tabs';
 import 'react-tabs/style/react-tabs.css';
 import ReactMarkdown from 'react-markdown';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { fetchFile } from '@ffmpeg/util';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -17,7 +17,7 @@ try {
     console.error("GoogleGenerativeAIの初期化に失敗:", error);
 }
 
-const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20" }) : null;
+const model = genAI ? genAI.getGenerativeModel({ model: "gemini-1.5-flash" }) : null;
 
 const dbManager = {
     dbName: 'TranscriptionDB',
@@ -154,11 +154,10 @@ const App: React.FC = () => {
 
     const loadFFmpeg = async () => {
         const ffmpeg = ffmpegRef.current;
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
         try {
             await ffmpeg.load({
-                coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-                wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+                coreURL: '/ffmpeg-core.js',
+                wasmURL: '/ffmpeg-core.wasm',
             });
             setLoadingMessage('AI準備完了');
         } catch (error) {
@@ -229,6 +228,7 @@ const App: React.FC = () => {
         const draw = () => {
             animationFrameIdRef.current = requestAnimationFrame(draw);
             analyser.getByteFrequencyData(dataArray);
+            if(!canvasCtx) return;
             canvasCtx.fillStyle = isDarkMode ? '#1e1e1e' : '#ffffff';
             canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
             const barWidth = (canvas.width / bufferLength) * 2.5;
