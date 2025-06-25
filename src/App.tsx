@@ -3,19 +3,13 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Tab, Tabs, TabList, TabPanel } from 'react-tabs';
 import 'react-tabs/style/react-tabs.css';
 import ReactMarkdown from 'react-markdown';
-// ▼▼▼ 修正点：確実な音声解析ライブラリをインポート ▼▼▼
-import decode from 'audio-decode';
 
-
-// ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-// ★あなたの新しい安全なAPIキーをここに設定してください
+// Gemini APIキーは、要約や清書など、ブラウザ側で完結するAI機能のために残しておきます。
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-
 const genAI = new GoogleGenerativeAI(API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20" });
 
-// ★★★★★ 追加：クラッシュ復旧のためのIndexedDB操作ヘルパー ★★★★★
+// クラッシュ復旧のためのIndexedDB操作ヘルパー (変更なし)
 const dbManager = {
     dbName: 'TranscriptionDB',
     storeName: 'audioChunks',
@@ -23,7 +17,6 @@ const dbManager = {
 
     openDB(): Promise<IDBDatabase> {
         return new Promise((resolve, reject) => {
-            // 既にDBインスタンスがあれば再利用
             if (this.db) {
                 resolve(this.db);
                 return;
@@ -77,64 +70,17 @@ const dbManager = {
     }
 };
 
-
-// 音声BlobをBase64文字列に変換するヘルパー関数
-const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-            const base64data = reader.result as string;
-            resolve(base64data.split(',')[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-    });
+// タイムスタンプのフォーマット関数
+const formatTime = (seconds: number) => {
+    const floorSeconds = Math.floor(seconds);
+    const min = Math.floor(floorSeconds / 60);
+    const sec = floorSeconds % 60;
+    return `[${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}]`;
 };
 
-// 録音中・清書用のAI関数
-const transcribeAndIdentifySpeakers = async (audioChunk: Blob, memo: string) => {
-    try {
-        const audioBase64 = await blobToBase64(audioChunk);
-        const prompt = `あなたは非常に優秀なAI議事録アシスタントです。
-以下の【コンテキスト情報】を最大のヒントとして活用し、提供された音声データから話者を特定し、文字起こししてください。
-
-【制約】
-- 発言者ごとに改行してください。
-- 各発言の前に、話している人物名を[名前]の形式で付けてください。名前が不明な場合は[不明]と記載してください。
-- 音声の内容を忠実に文字に起こしてください。要約はしないでください。
-- 出力は文字起こしの結果のみとし、それ以外の文章は含めないでください。
-
-【コンテキスト情報】
-${memo ? memo : 'なし'}
-
-以上の指示に従って、以下の音声を文字起こししてください。`;
-
-        const result = await model.generateContent([ prompt, { inlineData: { mimeType: 'audio/wav', data: audioBase64 } } ]);
-        const text = result.response.text();
-        return (!text || text.trim() === '') ? '（無音または認識不能区間）' : text;
-    } catch (error) {
-        console.error("話者特定付き文字起こし中にエラー:", error);
-        throw error;
-    }
-};
-
-// ファイルからの初期文字起こし用のAI関数
-const transcribeFileRaw = async (audioChunk: Blob) => {
-    try {
-        const audioBase64 = await blobToBase64(audioChunk);
-        const prompt = `以下の音声データを日本語で文字起こししてください。話者特定の必要はありません。句読点のみ適切に付与してください。`;
-        const result = await model.generateContent([ prompt, { inlineData: { mimeType: 'audio/wav', data: audioBase64 } } ]);
-        const text = result.response.text();
-        return (!text || text.trim() === '') ? '（無音または認識不能区間）' : text;
-    } catch (error) {
-        console.error("ファイルからの初期文字起こし中にエラー:", error);
-        throw error;
-    }
-};
-
-// AIによる清書用の関数
+// AIによる清書用の関数 (これはブラウザ側でテキスト処理するので残す)
 const refineTranscriptWithMemo = async (rawTranscript: string, memo: string) => {
-     try {
+    try {
         const prompt = `あなたは非常に優秀なAI編集者です。
 以下の【コンテキスト情報】と【元の文字起こしテキスト】を元に、テキストを清書してください。
 
@@ -160,46 +106,6 @@ ${rawTranscript}
     }
 }
 
-// 生音声データをWAV形式に変換するヘルパー関数
-const bufferToWav = (buffer: AudioBuffer): Blob => {
-    const numOfChan = buffer.numberOfChannels;
-    const len = buffer.length * numOfChan * 2 + 44;
-    const bufferOut = new ArrayBuffer(len);
-    const view = new DataView(bufferOut);
-    let pos = 0;
-
-    const writeString = (s: string) => { for (let i = 0; i < s.length; i++) { view.setUint8(pos++, s.charCodeAt(i)); } };
-    const setUint16 = (data: number) => { view.setUint16(pos, data, true); pos += 2; };
-    const setUint32 = (data: number) => { view.setUint32(pos, data, true); pos += 4; };
-
-    writeString('RIFF'); setUint32(len - 8); writeString('WAVE');
-    writeString('fmt '); setUint32(16); setUint16(1);
-    setUint16(numOfChan); setUint32(buffer.sampleRate);
-    setUint32(buffer.sampleRate * 2 * numOfChan); setUint16(numOfChan * 2);
-    setUint16(16); writeString('data'); setUint32(len - pos - 4);
-
-    const channels = [];
-    for (let i = 0; i < numOfChan; i++) { channels.push(buffer.getChannelData(i)); }
-    let offset = 0;
-    while (pos < len) {
-        for (let i = 0; i < numOfChan; i++) {
-            let sample = Math.max(-1, Math.min(1, channels[i][offset]));
-            sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-            view.setInt16(pos, sample, true);
-            pos += 2;
-        }
-        offset++;
-    }
-    return new Blob([view], { type: 'audio/wav' });
-};
-
-
-const formatTime = (seconds: number) => {
-    const floorSeconds = Math.floor(seconds);
-    const min = Math.floor(floorSeconds / 60);
-    const sec = floorSeconds % 60;
-    return `[${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}]`;
-};
 
 const App: React.FC = () => {
     const [isRecording, setIsRecording] = useState(false);
@@ -215,13 +121,10 @@ const App: React.FC = () => {
     const [isDarkMode, setIsDarkMode] = useState(false);
     const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
     const [selectedMicId, setSelectedMicId] = useState<string>('');
-    const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
     const [loadingMessage, setLoadingMessage] = useState('高精度AIの準備をしています...');
-    const [isFileTranscriptComplete, setIsFileTranscriptComplete] = useState(false);
     const [modalInfo, setModalInfo] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
     const [recoveryInfo, setRecoveryInfo] = useState<{ show: boolean, chunkCount: number }>({ show: false, chunkCount: 0 });
-    const [isRefining, setIsRefining] = useState<boolean>(false);
-    
+
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
@@ -229,13 +132,11 @@ const App: React.FC = () => {
     const animationFrameIdRef = useRef<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const recordingStartTimeRef = useRef<number>(0);
-    const lastTranscriptTextRef = useRef<string>('');
     const memoTextRef = useRef('');
     
     const audioContextRef = useRef<AudioContext | null>(null);
     const analyserRef = useRef<AnalyserNode | null>(null);
     const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-    const cancelFileUploadRef = useRef<boolean>(false);
 
     useEffect(() => {
         const checkForCrashedData = async () => {
@@ -323,16 +224,12 @@ const App: React.FC = () => {
         const draw = () => {
             animationFrameIdRef.current = requestAnimationFrame(draw);
             if (!analyserRef.current || !canvasCtx) return;
-
             analyserRef.current.getByteFrequencyData(dataArray);
-
             canvasCtx.fillStyle = isDarkMode ? '#1e1e1e' : '#ffffff';
             canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-
             const barWidth = (canvas.width / bufferLength) * 2.5;
             let barHeight;
             let x = 0;
-
             for (let i = 0; i < bufferLength; i++) {
                 barHeight = dataArray[i];
                 const r = 200 + (barHeight / 255) * 55;
@@ -346,61 +243,72 @@ const App: React.FC = () => {
         draw();
     };
 
+    // 音声データをバックエンドAPIに送信して文字起こしする共通関数
+    const transcribeAudioWithApi = async (audioBlob: Blob) => {
+        setIsLoadingAI(true);
+        setLoadingMessage("AIが文字起こし中です...");
+        setTranscript([]); // 古い結果をクリア
+        try {
+            const response = await fetch('/api/transcribe', {
+                method: 'POST',
+                body: audioBlob,
+                headers: {
+                    'Content-Type': audioBlob.type,
+                },
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'サーバーから不明なエラー応答' }));
+                throw new Error(errorData.error || '文字起こしAPIリクエストに失敗しました');
+            }
+
+            const result = await response.json();
+            const elapsedTime = (Date.now() - (recordingStartTimeRef.current || Date.now())) / 1000;
+            setTranscript([{ time: elapsedTime, text: result.transcription }]);
+            setModalInfo({ show: true, message: "文字起こしが完了しました。" });
+
+        } catch (error) {
+            console.error("Transcription failed:", error);
+            setModalInfo({ show: true, message: `ファイルの処理中にエラーが発生しました。お使いのブラウザが対応していない音声形式の可能性があります。` });
+            setTranscript([]);
+        } finally {
+            setIsLoadingAI(false);
+            setLoadingMessage("AI準備完了");
+        }
+    };
+
+
     const toggleRecording = async () => {
         if (isRecording) {
             setShowStopConfirm(true);
         } else {
             try {
                 await dbManager.clearAudioChunks();
-                
                 const constraints = { audio: { deviceId: selectedMicId ? { exact: selectedMicId } : undefined } };
                 const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                
                 setActiveMicrophone(devices.find(d => d.deviceId === selectedMicId)?.label || 'デフォルトマイク');
                 setupVisualizer(stream);
-                
                 setDownloadLink('');
                 audioChunksRef.current = [];
-                lastTranscriptTextRef.current = '';
-                setIsFileTranscriptComplete(false);
-                mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
                 
-                mediaRecorderRef.current.ondataavailable = async (e) => {
+                const options = { mimeType: 'audio/webm;codecs=opus' };
+                mediaRecorderRef.current = new MediaRecorder(stream, options);
+                
+                mediaRecorderRef.current.ondataavailable = (e) => {
                     if (e.data.size > 0) {
                         audioChunksRef.current.push(e.data);
-                        await dbManager.addAudioChunk(e.data);
-                    }
-                    
-                    const fullAudioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm;codecs=opus' });
-                    if (fullAudioBlob.size === 0) return;
-
-                    setIsTranscribing(true);
-                    try {
-                        const wavBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-                        const fullTranscript = await transcribeAndIdentifySpeakers(wavBlob, memoTextRef.current);
-                        const newText = fullTranscript.substring(lastTranscriptTextRef.current.length);
-
-                        if(newText.trim().length > 0) {
-                            const elapsedTime = (Date.now() - recordingStartTimeRef.current) / 1000;
-                            setTranscript(prev => [...prev, { time: elapsedTime, text: newText }]);
-                        }
-                        
-                        lastTranscriptTextRef.current = fullTranscript;
-
-                    } catch (error) {
-                        const elapsedTime = (Date.now() - recordingStartTimeRef.current) / 1000;
-                        setTranscript(prev => [...prev, {time: elapsedTime, text: "[エラー]"}]);
-                    } finally {
-                        setIsTranscribing(false);
+                        dbManager.addAudioChunk(e.data);
                     }
                 };
 
                 mediaRecorderRef.current.onstop = () => {
-                    const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm;codecs=opus' });
+                    const audioBlob = new Blob(audioChunksRef.current, { type: options.mimeType });
                     setDownloadLink(URL.createObjectURL(audioBlob));
                     stream.getTracks().forEach(track => track.stop());
-                    dbManager.clearAudioChunks();
-                 };
+                    if (audioBlob.size > 0) {
+                        transcribeAudioWithApi(audioBlob);
+                    }
+                };
                 
                 setTranscript([]);
                 setSummary('');
@@ -411,7 +319,7 @@ const App: React.FC = () => {
 
             } catch (err) {
                 console.error("マイクアクセス失敗:", err);
-                setActiveMicrophone('マイクへのアクセスが拒否されました。');
+                setModalInfo({ show: true, message: `マイクへのアクセスに失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}` });
             }
         }
     };
@@ -419,90 +327,31 @@ const App: React.FC = () => {
     const handleConfirmStop = () => {
         if (mediaRecorderRef.current?.state === "recording") {
             mediaRecorderRef.current.stop();
-            dbManager.clearAudioChunks();
         }
         setIsRecording(false);
         stopVisualizer();
         setShowStopConfirm(false);
     };
 
-    // ▼▼▼ 修正点：関数全体を最終版に修正 ▼▼▼
     const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
-
-        cancelFileUploadRef.current = false;
         setTranscript([]);
         setSummary('');
         setDownloadLink(URL.createObjectURL(file));
         setActiveTab(0);
-        setIsTranscribing(true);
-        setIsFileTranscriptComplete(false);
-
-        try {
-            setLoadingMessage('音声ファイルを解析中...');
-            const arrayBuffer = await file.arrayBuffer();
-            
-            // `audio-decode` を使ってファイル形式を気にせずデコード
-            const audioBuffer = await decode(arrayBuffer);
-            
-            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-            const duration = audioBuffer.duration;
-            const chunkSizeInSeconds = 60;
-            let currentTime = 0;
-            let chunkCount = 1;
-            const totalChunks = Math.ceil(duration / chunkSizeInSeconds);
-            
-            while (currentTime < duration && !cancelFileUploadRef.current) {
-                setLoadingMessage(`初期文字起こし中... (${chunkCount}/${totalChunks})`);
-                const startTime = currentTime;
-                const endTime = Math.min(currentTime + chunkSizeInSeconds, duration);
-                
-                const frameOffset = Math.floor(startTime * audioBuffer.sampleRate);
-                const frameCount = Math.floor((endTime - startTime) * audioBuffer.sampleRate);
-
-                if (frameCount <= 0) break;
-
-                const chunkBuffer = audioContext.createBuffer(audioBuffer.numberOfChannels, frameCount, audioBuffer.sampleRate);
-                for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-                    chunkBuffer.getChannelData(i).set(audioBuffer.getChannelData(i).subarray(frameOffset, frameOffset + frameCount));
-                }
-                const wavChunkBlob = bufferToWav(chunkBuffer);
-                const transcribedText = await transcribeFileRaw(wavChunkBlob);
-                
-                if (!cancelFileUploadRef.current) {
-                    setTranscript(prev => [...prev, {time: startTime, text: transcribedText}]);
-                }
-                
-                currentTime += chunkSizeInSeconds;
-                chunkCount++;
-                
-                if(currentTime < duration && !cancelFileUploadRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                }
-            }
-
-            if (!cancelFileUploadRef.current) {
-                setIsFileTranscriptComplete(true);
-                setModalInfo({ show: true, message: 'ファイルからの初期文字起こしが完了しました。「AIで清書する」ボタンで、メモの内容を反映した清書ができます。'});
-            }
-            
-        } catch (error) {
-            console.error("ファイル処理中にエラー:", error);
-            if (!cancelFileUploadRef.current) {
-                 setModalInfo({ show: true, message: 'ファイルの処理中にエラーが発生しました。お使いのブラウザが対応していない音声形式の可能性があります。'});
-            }
-        } finally {
-            if (cancelFileUploadRef.current) {
-                setModalInfo({ show: true, message: '文字起こしを停止しました。' });
-            }
-            setIsTranscribing(false);
-            setLoadingMessage('AI準備完了');
-        }
+        await transcribeAudioWithApi(file);
     };
     
-    const handleCancelFileUpload = () => {
-        cancelFileUploadRef.current = true;
+    const handleProcessRecoveredData = async () => {
+        setRecoveryInfo({ show: false, chunkCount: 0 });
+        const recoveredChunks = await dbManager.getAllAudioChunks();
+        if (recoveredChunks.length > 0) {
+            const recoveredBlob = new Blob(recoveredChunks, { type: 'audio/webm;codecs=opus' });
+            setDownloadLink(URL.createObjectURL(recoveredBlob));
+            await transcribeAudioWithApi(recoveredBlob);
+        }
+        dbManager.clearAudioChunks();
     };
 
 
@@ -511,17 +360,16 @@ const App: React.FC = () => {
             setModalInfo({ show: true, message: '清書する文字起こしデータがありません。'});
             return;
         }
-        setIsRefining(true);
+        setIsLoadingAI(true);
+        setLoadingMessage('AIが清書中です...');
         try {
             const rawTranscript = transcript.map(t => t.text).join('\n');
             const refinedText = await refineTranscriptWithMemo(rawTranscript, memoText);
             
             const refinedLines = refinedText.split('\n').filter(line => line.trim() !== '');
-            const originalTranscript = [...transcript];
-
             const newTranscript = refinedLines.map((line, index) => {
-                const time = originalTranscript[index] ? originalTranscript[index].time : (originalTranscript[originalTranscript.length - 1]?.time || 0);
-                return { time: time, text: line };
+                const originalEntry = transcript[index] || transcript[transcript.length - 1];
+                return { time: originalEntry.time, text: line };
             });
 
             setTranscript(newTranscript);
@@ -529,66 +377,11 @@ const App: React.FC = () => {
         } catch (error) {
             setModalInfo({ show: true, message: 'AIによる清書中にエラーが発生しました。'});
         } finally {
-            setIsRefining(false);
-            setIsFileTranscriptComplete(false);
+            setIsLoadingAI(false);
+            setLoadingMessage('AI準備完了');
         }
     };
     
-    const handleProcessRecoveredData = async () => {
-        setRecoveryInfo({ show: false, chunkCount: 0 });
-        setIsTranscribing(true);
-        setLoadingMessage('復旧データを処理中...');
-        try {
-            const recoveredChunks = await dbManager.getAllAudioChunks();
-            const recoveredBlob = new Blob(recoveredChunks, { type: 'audio/webm;codecs=opus' });
-            setDownloadLink(URL.createObjectURL(recoveredBlob));
-            
-            // `audio-decode` を使って復旧データもデコード
-            const arrayBuffer = await recoveredBlob.arrayBuffer();
-            const audioBuffer = await decode(arrayBuffer);
-            
-            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-            const duration = audioBuffer.duration;
-            const chunkSizeInSeconds = 60;
-            let currentTime = 0;
-            let chunkCount = 1;
-            const totalChunks = Math.ceil(duration / chunkSizeInSeconds);
-
-            while (currentTime < duration) {
-                setLoadingMessage(`復旧データを文字起こし中... (${chunkCount}/${totalChunks})`);
-                const startTime = currentTime;
-                const endTime = Math.min(currentTime + chunkSizeInSeconds, duration);
-
-                const frameOffset = Math.floor(startTime * audioBuffer.sampleRate);
-                const frameCount = Math.floor((endTime - startTime) * audioBuffer.sampleRate);
-
-                if (frameCount <= 0) break;
-
-                const chunkBuffer = audioContext.createBuffer(audioBuffer.numberOfChannels, frameCount, audioBuffer.sampleRate);
-                for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-                    chunkBuffer.getChannelData(i).set(audioBuffer.getChannelData(i).subarray(frameOffset, frameOffset + frameCount));
-                }
-                const wavChunkBlob = bufferToWav(chunkBuffer);
-                const transcribedText = await transcribeFileRaw(wavChunkBlob);
-                setTranscript(prev => [...prev, {time: currentTime, text: transcribedText}]);
-                currentTime += chunkSizeInSeconds;
-                chunkCount++;
-            }
-
-            setIsFileTranscriptComplete(true);
-            setModalInfo({ show: true, message: '復旧したデータの文字起こしが完了しました。'});
-
-        } catch (error) {
-            console.error("復旧データの処理中にエラー:", error);
-            setModalInfo({ show: true, message: '復旧データの処理中にエラーが発生しました。'});
-        } finally {
-            setIsTranscribing(false);
-            setLoadingMessage('AI準備完了');
-            dbManager.clearAudioChunks();
-        }
-    };
-
-
     const handleTimestampClick = (time: number) => { 
         if(audioPlayerRef.current) {
             audioPlayerRef.current.currentTime = time;
@@ -603,12 +396,12 @@ const App: React.FC = () => {
             return;
         }
         setIsLoadingAI(true);
+        setLoadingMessage('AIが議事録を作成中です...');
         setSummary('');
         setActiveTab(1);
         try {
-            setModalInfo({ show: true, message: 'AIによる議事録の生成を開始します...'});
-            const meetingDate = new Date().toLocaleString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-            const prompt = `あなたはプロの議事録作成AIです。提供された以下のタイムスタンプ付き【会議の文字起こし】と【手動メモ】を分析し、その内容から網羅的かつ簡潔な議事録を作成してください。議事録は以下の構造とルールに従って記述してください。---## 議事録### 1. 会議概要**会議日時**: ${meetingDate}会議の目的、主要な議題、および全体的な結論を簡潔にまとめる。### 2. 議論の要点会議で話し合われた重要なポイントや論点を、主要なテーマごとに整理して箇条書きで記述する。発言者名が特定できる場合は、可能であれば「[発言者名]：[発言内容の要約]」のように記載する。複数の議題があった場合は、議題ごとにセクションを分けることを検討する。### 3. 決定事項会議で合意された事項や結論を明確に箇条書きで記述する。決定事項が複数ある場合は、優先順位や関連性に応じて整理する。### 4. アクションアイテム (次回以降のタスク)会議で決定された具体的な行動やタスク、担当者、期限を箇条書きで記述する。- **タスク内容**:- **担当者**:- **期限**:- **備考**: （あれば）### 5. 次回開催について (もし言及があれば)次回会議の日程、時間、場所、主要議題など、次回開催に関する情報があれば記述する。---**【議事録作成の際の注意事項】** * **網羅性:** 会議の全ての重要な情報を漏れなく含めること。* **簡潔性:** 無駄な表現を省き、要点を分かりやすくまとめること。冗長な会話は要約し、結論を明確にすること。* **客観性:** 個人的な意見や感情を交えず、会議で話された事実のみを記述すること。* **正確性:** 固有名詞、数値、決定事項などは可能な限り正確に記述すること。* **言葉遣い:** 丁寧かつプロフェッショナルなトーンで記述すること。* **ノイズの排除:** 音声認識のノイズや、本題と関係のない雑談は議事録から除外すること。* **不明瞭な点の扱い:** もし内容が不明瞭な点や、発言が途切れている箇所があれば、その旨を簡潔に記載するか、文脈から判断して補完すること。ただし、推測が過ぎる場合は「[内容不明]」のように記すことも考慮する。---それでは、以下の情報から議事録を作成してください。【会議の文字起こし】${plainTranscript}【手動メモ】${memoText}`;
+            const meetingDate = new Date().toLocaleString('ja-JP');
+            const prompt = `あなたはプロの議事録作成AIです。提供された以下のタイムスタンプ付き【会議の文字起こし】と【手動メモ】を分析し、その内容から網羅的かつ簡潔な議事録を作成してください。議事録は以下の構造とルールに従って記述してください。---## 議事録### 1. 会議概要**会議日時**: ${meetingDate}会議の目的、主要な議題、および全体的な結論を簡潔にまとめる。### 2. 議論の要点会議で話し合われた重要なポイントや論点を、主要なテーマごとに整理して箇条書きで記述する。### 3. 決定事項会議で合意された事項や結論を明確に箇条書きで記述する。### 4. アクションアイテム (次回以降のタスク)会議で決定された具体的な行動やタスク、担当者、期限を箇条書きで記述する。---**【会議の文字起こし】**${plainTranscript}**【手動メモ】**${memoText}`;
             const result = await model.generateContent(prompt);
             setSummary(result.response.text());
             setModalInfo({ show: true, message: '議事録が完成しました！「AIによる議事録」タブでご確認ください。'});
@@ -617,6 +410,7 @@ const App: React.FC = () => {
             setModalInfo({ show: true, message: '議事録の生成中にエラーが発生しました。'});
         } finally {
             setIsLoadingAI(false);
+            setLoadingMessage("AI準備完了");
         }
     };
     
@@ -666,25 +460,12 @@ const App: React.FC = () => {
 
                 <p style={{marginTop: 0}}>その場で録音するか、既存の音声ファイルを読み込んでください。</p>
                 <div style={{display: 'flex', gap: '10px'}}>
-                    <button onClick={toggleRecording} disabled={loadingMessage !== 'AI準備完了'} style={{ fontSize: '16px', padding: '10px 20px', backgroundColor: isRecording ? '#dc3545' : '#007bff', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', flex: 1 }}>
-                        {isRecording ? '■ 録音停止' : (loadingMessage !== 'AI準備完了' ? loadingMessage : '● 録音開始')}
+                    <button onClick={toggleRecording} disabled={isLoadingAI} style={{ fontSize: '16px', padding: '10px 20px', backgroundColor: isRecording ? '#dc3545' : (isLoadingAI ? '#6c757d' : '#007bff'), color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', flex: 1 }}>
+                        {isRecording ? '■ 録音停止' : (isLoadingAI ? loadingMessage : '● 録音開始')}
                     </button>
-                    <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".mp3,.m4a,.wav,.ogg,.flac" style={{ display: 'none' }} />
-                    <button 
-                        onClick={isTranscribing && !isRecording ? handleCancelFileUpload : () => fileInputRef.current?.click()} 
-                        disabled={(loadingMessage !== 'AI準備完了' && !isTranscribing) || isRecording} 
-                        style={{ 
-                            fontSize: '16px', 
-                            padding: '10px 20px', 
-                            backgroundColor: isTranscribing && !isRecording ? '#dc3545' : '#6c757d', 
-                            color: 'white', 
-                            border: 'none', 
-                            borderRadius: '5px', 
-                            cursor: 'pointer', 
-                            flex: 1 
-                        }}
-                    >
-                        {isTranscribing && !isRecording ? '■ 処理を停止' : '音声ファイルを読み込む'}
+                    <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="audio/*,video/mp4" style={{ display: 'none' }} />
+                    <button onClick={() => fileInputRef.current?.click()} disabled={isLoadingAI || isRecording} style={{ fontSize: '16px', padding: '10px 20px', backgroundColor: isLoadingAI || isRecording ? '#6c757d' : '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', flex: 1 }}>
+                        {isLoadingAI ? loadingMessage : '音声ファイルを読み込む'}
                     </button>
                 </div>
                 
@@ -692,7 +473,7 @@ const App: React.FC = () => {
                 
                 <div className="info-box" style={{ marginTop: '15px', padding: '15px', borderRadius: '5px' }}>
                      <label htmlFor="mic-select" style={{display: 'block', marginBottom: '8px'}}><strong>使用するマイクを選択</strong></label>
-                     <select id="mic-select" value={selectedMicId} onChange={(e) => setSelectedMicId(e.target.value)} disabled={isRecording} style={{width: '100%'}}>
+                     <select id="mic-select" value={selectedMicId} onChange={(e) => setSelectedMicId(e.target.value)} disabled={isRecording || isLoadingAI} style={{width: '100%'}}>
                          {devices.length === 0 && <option>マイクが見つかりません</option>}
                          {devices.map(device => ( <option key={device.deviceId} value={device.deviceId}> {device.label || `マイク ${devices.indexOf(device) + 1}`} </option> ))}
                      </select>
@@ -712,24 +493,23 @@ const App: React.FC = () => {
                     </TabList>
 
                     <TabPanel>
-                        {downloadLink && !isTranscribing && ( <div style={{ margin: '15px 0' }}> <p style={{fontWeight: 'bold', marginBottom: '5px'}}>音声ファイルの再生</p> <audio ref={audioPlayerRef} src={downloadLink} controls style={{width: '100%'}} /> <a href={downloadLink} download={`recording-${new Date().toISOString().slice(0,10)}.webm`} style={{fontSize: '12px', display: 'block', textAlign: 'right', marginTop: '5px'}}>ダウンロード</a> </div> )}
+                        {downloadLink && ( <div style={{ margin: '15px 0' }}> <p style={{fontWeight: 'bold', marginBottom: '5px'}}>音声ファイルの再生</p> <audio ref={audioPlayerRef} src={downloadLink} controls style={{width: '100%'}} /> <a href={downloadLink} download={`recording-${new Date().toISOString().slice(0,10)}.webm`} style={{fontSize: '12px', display: 'block', textAlign: 'right', marginTop: '5px'}}>ダウンロード</a> </div> )}
                         
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: '10px'}}>
                             <h2 style={{ marginTop: '10px', marginBottom: '10px' }}>文字起こし結果</h2>
-                            {!isRecording && transcript.length > 0 && !isTranscribing && (
+                            {transcript.length > 0 && !isLoadingAI && (
                                 <button 
-                                    onClick={handleRefineTranscript} 
-                                    disabled={isRefining}
+                                    onClick={handleRefineTranscript}
                                     style={{
                                         fontSize: '14px', 
                                         padding: '8px 16px', 
-                                        backgroundColor: isRefining ? '#6c757d' : '#28a745', 
+                                        backgroundColor: '#28a745', 
                                         color: 'white', 
                                         border: 'none', 
                                         borderRadius: '5px', 
                                         cursor: 'pointer' 
                                     }}>
-                                    {isRefining ? '清書中です...' : 'AIで清書する'}
+                                    AIで清書する
                                 </button>
                             )}
                             <button onClick={() => handleDownload(transcript.map(t => `${formatTime(t.time)} ${t.text}`).join('\n\n'), `transcript-${new Date().toISOString().slice(0, 10)}.txt`)} disabled={transcript.length === 0} style={{fontSize: '14px', padding: '8px 16px', backgroundColor: transcript.length === 0 ? '#6c757d' : '#6f42c1', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>
@@ -737,7 +517,8 @@ const App: React.FC = () => {
                             </button>
                         </div>
                         <div className="transcript-panel" style={{ padding: '10px', minHeight: '200px', lineHeight: '1.8' }}>
-                            {transcript.length > 0 ? (
+                            {isLoadingAI && <p>{loadingMessage}</p>}
+                            {!isLoadingAI && transcript.length > 0 ? (
                                 transcript.map((item, index) => (
                                     <p key={index} style={{margin: '0 0 10px 0'}}>
                                         <span className="timestamp" onClick={() => handleTimestampClick(item.time)}> {formatTime(item.time)} </span>
@@ -745,10 +526,8 @@ const App: React.FC = () => {
                                     </p>
                                 ))
                             ) : (
-                                <p>{isTranscribing ? '' : 'ここに高精度AIによる文字起こし結果がリアルタイムで表示されます...'}</p>
+                                !isLoadingAI && <p>ここに高精度AIによる文字起こし結果がリアルタイムで表示されます...</p>
                             )}
-                            {isRecording && isTranscribing && ( <p style={{margin: '0 0 10px 0', color: '#888'}}> <span className="timestamp">{formatTime((Date.now() - recordingStartTimeRef.current)/1000)}</span> （AIが考えています...） </p> )}
-                            {!isRecording && isTranscribing && !isRefining && ( <p style={{margin: '0 0 10px 0', color: '#888'}}> {loadingMessage} </p> )}
                         </div>
                     </TabPanel>
                     
@@ -762,7 +541,8 @@ const App: React.FC = () => {
                             </div>
                         </div>
                         <div className="ai-summary-panel">
-                            {summary ? <ReactMarkdown>{summary}</ReactMarkdown> : <p>ここにAIが生成した議事録が表示されます...</p>}
+                            {isLoadingAI && summary === '' && <p>AIが議事録を作成中です...</p>}
+                            {summary ? <ReactMarkdown>{summary}</ReactMarkdown> : !isLoadingAI && <p>ここにAIが生成した議事録が表示されます...</p>}
                         </div>
                     </TabPanel>
 
