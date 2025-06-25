@@ -178,7 +178,19 @@ const App: React.FC = () => {
         }
         loadFFmpeg();
         getAudioDevices();
+        checkForCrashedData();
     }, []);
+    
+    const checkForCrashedData = async () => {
+        try {
+            const recoveredChunks = await dbManager.getAllAudioChunks();
+            if (recoveredChunks.length > 0) {
+                setRecoveryInfo({ show: true, chunkCount: recoveredChunks.length });
+            }
+        } catch (error) {
+            console.error("復旧データの確認中にエラー:", error);
+        }
+    };
 
     const getAudioDevices = async () => {
         try {
@@ -242,18 +254,18 @@ const App: React.FC = () => {
         await ffmpeg.writeFile(file.name, await fetchFile(file));
         await ffmpeg.exec(['-i', file.name, 'output.wav']);
         const data = await ffmpeg.readFile('output.wav');
-        setIsLoadingAI(false);
-        setLoadingMessage('AI準備完了');
         return new Blob([data], { type: 'audio/wav' });
     };
 
     const processAudio = async (audioFile: File | Blob, fileName: string) => {
-        setIsLoadingAI(true);
-        setLoadingMessage("AIが文字起こし中です...");
-        setTranscript([]);
         try {
             const fileToConvert = audioFile instanceof Blob ? new File([audioFile], fileName, { type: audioFile.type }) : audioFile;
             const wavBlob = await convertToWav(fileToConvert);
+
+            setIsLoadingAI(true);
+            setLoadingMessage("AIが文字起こし中です...");
+            setTranscript([]);
+
             const text = await transcribeAudio(wavBlob);
             setTranscript([{ time: 0, text: text }]);
             setModalInfo({ show: true, message: '文字起こしが完了しました。' });
@@ -281,6 +293,7 @@ const App: React.FC = () => {
             setShowStopConfirm(true);
         } else {
             try {
+                await dbManager.clearAudioChunks();
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: selectedMicId ? { exact: selectedMicId } : undefined } });
                 setupVisualizer(stream);
                 audioChunksRef.current = [];
@@ -288,7 +301,10 @@ const App: React.FC = () => {
                 mediaRecorderRef.current = new MediaRecorder(stream, options);
 
                 mediaRecorderRef.current.ondataavailable = (e) => {
-                    if (e.data.size > 0) audioChunksRef.current.push(e.data);
+                    if (e.data.size > 0) {
+                        audioChunksRef.current.push(e.data);
+                        dbManager.addAudioChunk(e.data);
+                    }
                 };
 
                 mediaRecorderRef.current.onstop = () => {
@@ -321,6 +337,18 @@ const App: React.FC = () => {
         setShowStopConfirm(false);
     };
 
+    const handleProcessRecoveredData = async () => {
+        setRecoveryInfo({ show: false, chunkCount: 0 });
+        const recoveredChunks = await dbManager.getAllAudioChunks();
+        if (recoveredChunks.length > 0) {
+            const recoveredBlob = new Blob(recoveredChunks, { type: 'audio/webm;codecs=opus' });
+            setDownloadLink(URL.createObjectURL(recoveredBlob));
+            await processAudio(recoveredBlob, "recovered_recording.webm");
+        }
+        dbManager.clearAudioChunks();
+    };
+
+
     const handleRefineTranscript = async () => {
         if (transcript.length === 0) {
             setModalInfo({ show: true, message: '清書する文字起こしデータがありません。'});
@@ -346,7 +374,7 @@ const App: React.FC = () => {
     
     const generateSummary = async () => {
         const plainTranscript = transcript.map(item => `${formatTime(item.time)} ${item.text}`).join('\n\n');
-        if (!plainTranscript && !memoText) {
+        if (!plainTranscript && !memoTextRef.current) {
             setModalInfo({ show: true, message: '要約する文字起こしやメモがありません。'});
             return;
         }
@@ -488,9 +516,9 @@ const App: React.FC = () => {
                             </button>
                         </div>
                         <div className="transcript-panel">
-                           {isLoadingAI && <p>{loadingMessage}</p>}
-                           {!isLoadingAI && transcript.length > 0 ? (
-                               transcript.map((item, index) => (
+                           {isLoadingAI ? <p>{loadingMessage}</p> : (
+                               transcript.length > 0 ? (
+                                transcript.map((item, index) => (
                                    <p key={index} style={{margin: '0 0 10px 0'}}>
                                        <span className="timestamp" onClick={() => handleTimestampClick(item.time)}> {formatTime(item.time)} </span>
                                        {item.text}
@@ -555,6 +583,23 @@ const App: React.FC = () => {
                             </button>
                             <button onClick={() => setShowStopConfirm(false)} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '110px'}}>
                                 キャンセル
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {recoveryInfo.show && (
+                <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0, 0, 0, 0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1001 }}>
+                    <div style={{ backgroundColor: isDarkMode ? '#2a2a2a' : 'white', color: isDarkMode ? '#e0e0e0' : '#333', padding: '25px', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.2)', textAlign: 'center', width: '90%', maxWidth: '420px' }}>
+                        <h3 style={{marginTop: 0, fontSize: '1.3em', color: '#ffc107'}}>⚠ 未保存の録音データ</h3>
+                        <p style={{margin: '15px 0 25px', fontSize: '0.95em'}}>前回のセッションが正常に終了されませんでした。途中まで録音されたデータが見つかりましたが、どうしますか？</p>
+                        <div style={{display: 'flex', justifyContent: 'center', gap: '15px'}}>
+                            <button onClick={handleProcessRecoveredData} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '120px'}}>
+                                文字起こしする
+                            </button>
+                            <button onClick={() => { dbManager.clearAudioChunks(); setRecoveryInfo({ show: false, chunkCount: 0 }); }} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '120px'}}>
+                                データを破棄
                             </button>
                         </div>
                     </div>
