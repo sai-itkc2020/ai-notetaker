@@ -89,18 +89,23 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     });
 };
 
-// 言語設定を引数で受け取るように変更
+// ★★★ 改善点：プロンプトを大幅に強化 ★★★
 const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en' | 'auto') => {
     if (!model) throw new Error("モデルが初期化されていません。");
     try {
         const audioBase64 = await blobToBase64(audioChunk);
         let prompt = '';
-        if (language === 'ja') {
-            prompt = `以下の音声データを日本語で文字起こししてください。話者特定の必要はありません。句読点のみ適切に付与してください。`;
-        } else if (language === 'en') {
-            prompt = `Please transcribe the following audio data in English. Speaker identification is not necessary. Just add punctuation appropriately.`;
-        } else {
-            prompt = `Identify the primary language in the following audio data and transcribe it accurately in that language. Do not identify speakers. Just add punctuation appropriately.`;
+        switch (language) {
+            case 'ja':
+                prompt = `これは会議の音声の一部です。この音声を日本語で文字に起こしてください。話している内容だけをテキスト化し、環境音（例：[Engine hum]）や話者特定の情報は含めないでください。句読点のみ適切に付与してください。`;
+                break;
+            case 'en':
+                prompt = `This is a part of a meeting audio. Please transcribe this audio in English. Only textualize the spoken content and do not include environmental sounds (e.g., [Engine hum]) or speaker identification. Only add punctuation appropriately.`;
+                break;
+            case 'auto':
+            default:
+                prompt = `This is a part of a meeting audio. First, identify the primary spoken language (e.g., Japanese, English). Then, transcribe the spoken content accurately in that language. Do not include environmental sounds or speaker identification. Output only the transcribed text with appropriate punctuation.`;
+                break;
         }
         
         const result = await model.generateContent([ prompt, { inlineData: { mimeType: 'audio/wav', data: audioBase64 } } ]);
@@ -112,7 +117,6 @@ const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en' | 'auto
     }
 };
 
-// 言語設定を引数で受け取るように変更
 const refineTranscriptWithMemo = async (rawTranscript: string, memo: string, language: 'ja' | 'en' | 'auto') => {
     if (!model) throw new Error("モデルが初期化されていません。");
      try {
@@ -208,6 +212,9 @@ const App: React.FC = () => {
             setLoadingMessage('AI準備完了');
         };
         init();
+        return () => {
+            stopVisualizer(true);
+        };
     }, []);
 
     const checkForCrashedData = async () => {
@@ -395,6 +402,7 @@ const App: React.FC = () => {
                 audioChunksRef.current = [];
                 mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
                 
+                // ★★★ 改善点：録音中はデータを溜めるだけにする ★★★
                 mediaRecorderRef.current.ondataavailable = (e) => {
                     if (e.data.size > 0) {
                         audioChunksRef.current.push(e.data);
@@ -402,6 +410,7 @@ const App: React.FC = () => {
                     }
                 };
 
+                // ★★★ 改善点：録音停止時に一括処理する ★★★
                 mediaRecorderRef.current.onstop = async () => {
                     stopVisualizer();
                     stream.getTracks().forEach(track => track.stop());
@@ -415,7 +424,7 @@ const App: React.FC = () => {
                         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
                         const arrayBuffer = await audioBlob.arrayBuffer();
                         const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-                        await processAudioInChunks(audioBuffer);
+                        await processAudioInChunks(audioBuffer); // ファイル処理と同じ安定したロジックを呼び出す
                     } catch(error) {
                         console.error("録音データの処理エラー:", error);
                         setModalInfo({ show: true, message: '録音データの処理中にエラーが発生しました。'});
@@ -428,7 +437,7 @@ const App: React.FC = () => {
                 setSummary('');
                 setActiveTab(0);
                 setIsRecording(true);
-                mediaRecorderRef.current.start(1000);
+                mediaRecorderRef.current.start(1000); // 1秒ごとにチャンクを保存
 
             } catch (err) {
                 console.error("マイクアクセス失敗:", err);
@@ -520,7 +529,6 @@ const App: React.FC = () => {
         }
     };
 
-    // ★★★ 修正点：handleCopyToClipboard関数をここに追加 ★★★
     const handleCopyToClipboard = () => {
         if (!summary) return;
         navigator.clipboard.writeText(summary).then(() => {
@@ -542,6 +550,7 @@ const App: React.FC = () => {
         URL.revokeObjectURL(url);
     };
     
+    // ★★★ 改善点：清書中のボタン表示を制御 ★★★
     const getButtonState = () => {
         if (isRefining) return { text: 'AIで清書中です...', color: '#28a745', disabled: true };
         if (isProcessingFile) return { text: loadingMessage, color: '#6c757d', disabled: true };
