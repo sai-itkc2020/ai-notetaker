@@ -845,4 +845,77 @@ const App: React.FC = () => {
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: '15px'}}>
                             <h2 style={{ marginTop: '10px', marginBottom: '10px' }}>AIによる議事録</h2>
                             <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                                <button onClick={() => handleDownload(summary, `minutes-${new Date().toISOString().slice(0, 10)}.txt`)} disabled={!summary} style={{fontSize: '14px', padding: '8px 16px', backgroundColor: !summary ? '#6c757d' :
+                                <button onClick={() => handleDownload(summary, `minutes-${new Date().toISOString().slice(0, 10)}.txt`)} disabled={!summary} style={{fontSize: '14px', padding: '8px 16px', backgroundColor: !summary ? '#6c757d' : '#0069d9', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}> 議事録をダウンロード </button>
+                                <button onClick={handleCopyToClipboard} disabled={!summary} style={{fontSize: '14px', padding: '8px 16px', backgroundColor: !summary ? '#6c757d' : '#5a6268', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}> 議事録をコピー </button>
+                                {copySuccess && <span style={{color: 'green', fontSize: '14px'}}>{copySuccess}</span>}
+                            </div>
+                        </div>
+                        <div className="ai-summary-panel">
+                            {summary ? <ReactMarkdown>{summary}</ReactMarkdown> : <p>ここにAIが生成した議事録が表示されます...</p>}
+                        </div>
+                    </TabPanel>
+
+                    <TabPanel>
+                        <h2 style={{ marginTop: '10px' }}>手動メモ</h2>
+                        <textarea
+                            value={memoText}
+                            onChange={(e) => {
+                                setMemoText(e.target.value);
+                                memoTextRef.current = e.target.value;
+                            }}
+                            placeholder="会議の参加者、決定事項の背景、次のアクションなど、音声以外の情報をここにメモします。例：参加者：山田太郎、佐藤花子"
+                            style={{ width: '98%', minHeight: '250px', padding: '10px', border: '1px solid', borderRadius: '5px', fontSize: '16px', lineHeight: '1.6' }}
+                        />
+                    </TabPanel>
+                </Tabs>
+            </div>
+
+            {modalInfo.show && (
+                <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+                    <div style={{ backgroundColor: isDarkMode ? '#2a2a2a' : 'white', color: isDarkMode ? '#e0e0e0' : '#333', padding: '25px 30px', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.2)', textAlign: 'center', width: '90%', maxWidth: '400px' }}>
+                        <p style={{margin: '0 0 20px', fontSize: '1.1em', lineHeight: '1.6'}}>{modalInfo.message}</p>
+                        <button onClick={() => setModalInfo({ show: false, message: '' })} style={{fontSize: '15px', padding: '10px 25px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer'}} >
+                            閉じる
+                        </button>
+                    </div>
+                </div>
+            )}
+            
+            {recoveryInfo.show && (
+                <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0, 0, 0, 0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1001 }}>
+                    <div style={{ backgroundColor: isDarkMode ? '#2a2a2a' : 'white', color: isDarkMode ? '#e0e0e0' : '#333', padding: '25px', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.2)', textAlign: 'center', width: '90%', maxWidth: '420px' }}>
+                        <h3 style={{marginTop: 0, fontSize: '1.3em', color: '#ffc107'}}>⚠ 未保存の録音データ</h3>
+                        <p style={{margin: '15px 0 25px', fontSize: '0.95em'}}>前回のセッションが正常に終了されませんでした。途中まで録音されたデータが見つかりましたが、どうしますか？</p>
+                        <div style={{display: 'flex', justifyContent: 'center', gap: '15px'}}>
+                            <button onClick={handleProcessRecoveredData} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '120px'}}>
+                                文字起こしする
+                            </button>
+                            <button onClick={() => { dbManager.clearAudioChunks(); setRecoveryInfo({ show: false, chunkCount: 0 }); }} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '120px'}}>
+                                データを破棄
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showStopConfirm && (
+                <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0, 0, 0, 0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+                    <div style={{ backgroundColor: isDarkMode ? '#2a2a2a' : 'white', color: isDarkMode ? '#e0e0e0' : '#333', padding: '25px', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.2)', textAlign: 'center', width: '90%', maxWidth: '360px' }}>
+                        <h3 style={{marginTop: 0, fontSize: '1.3em', color: isDarkMode ? '#ffffff' : '#000000'}}>録音を終了しますか？</h3>
+                        <p style={{margin: '15px 0 25px', fontSize: '0.95em'}}>録音を終了し、議事録の作成準備を開始します。</p>
+                        <div style={{display: 'flex', justifyContent: 'center', gap: '15px'}}>
+                            <button onClick={handleConfirmStop} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '110px'}}>
+                                はい、終了する
+                            </button>
+                            <button onClick={() => setShowStopConfirm(false)} style={{fontSize: '15px', padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', minWidth: '110px'}}>
+                                キャンセル
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+};
+
+export default App;
