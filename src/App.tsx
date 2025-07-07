@@ -18,7 +18,7 @@ try {
     console.error("GoogleGenerativeAIの初期化に失敗:", error);
 }
 
-const model = genAI ? genAI.getGenerativeModel({ model: "gemini-1.5-flash" }) : null;
+const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20" }) : null;
 
 // クラッシュ復旧のためのIndexedDB操作ヘルパー
 const dbManager = {
