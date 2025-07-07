@@ -90,7 +90,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 };
 
 // ★★★ 改善点：日本語・英語でプロンプトを完全に分離 ★★★
-const transcribeChunk = async (audioChunk: Blob, language: 'ja' | 'en', memo: string) => {
+const transcribeAndIdentifySpeakers = async (audioChunk: Blob, memo: string, language: 'ja' | 'en') => {
     if (!model) throw new Error("モデルが初期化されていません。");
     try {
         const audioBase64 = await blobToBase64(audioChunk);
@@ -436,16 +436,14 @@ const App: React.FC = () => {
                 mediaRecorderRef.current.ondataavailable = async (e) => {
                     if (e.data.size > 0) {
                         const chunkBlob = e.data;
-                        audioChunksRef.current.push(chunkBlob);
-                        await dbManager.addAudioChunk(chunkBlob);
-
+                        // 毎回全データを送るのではなく、来たチャンクだけを処理する
                         setIsLoadingAI(true);
                         try {
                             const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
                             const arrayBuffer = await chunkBlob.arrayBuffer();
                             const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                             const wavBlob = bufferToWav(audioBuffer);
-                            const transcribedText = await transcribeChunk(wavBlob, language, memoTextRef.current);
+                            const transcribedText = await transcribeAndIdentifySpeakers(wavBlob, memoTextRef.current, language);
                             const elapsedTime = (Date.now() - recordingStartTimeRef.current) / 1000;
                             setTranscript(prev => [...prev, { time: elapsedTime, text: transcribedText }]);
                         } catch (error) {
