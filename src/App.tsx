@@ -89,7 +89,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     });
 };
 
-// ★★★ 改善点：言語設定を引数で受け取るように変更 ★★★
+// 言語設定を引数で受け取るように変更
 const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en' | 'auto') => {
     if (!model) throw new Error("モデルが初期化されていません。");
     try {
@@ -112,7 +112,7 @@ const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en' | 'auto
     }
 };
 
-// ★★★ 改善点：言語設定を引数で受け取るように変更 ★★★
+// 言語設定を引数で受け取るように変更
 const refineTranscriptWithMemo = async (rawTranscript: string, memo: string, language: 'ja' | 'en' | 'auto') => {
     if (!model) throw new Error("モデルが初期化されていません。");
      try {
@@ -186,7 +186,6 @@ const App: React.FC = () => {
     const [loadingMessage, setLoadingMessage] = useState('高精度AIの準備をしています...');
     const [modalInfo, setModalInfo] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
     const [recoveryInfo, setRecoveryInfo] = useState<{ show: boolean, chunkCount: number }>({ show: false, chunkCount: 0 });
-    // ★★★ 追加：状態管理の追加 ★★★
     const [language, setLanguage] = useState<'ja' | 'en' | 'auto'>('auto');
     const [isRefining, setIsRefining] = useState(false);
     const [isProcessingFile, setIsProcessingFile] = useState(false);
@@ -199,13 +198,12 @@ const App: React.FC = () => {
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const memoTextRef = useRef('');
     const audioContextRef = useRef<AudioContext | null>(null);
-    // ★★★ 追加：マイクチェック用とファイル処理中断用のRef ★★★
     const micCheckStreamRef = useRef<MediaStream | null>(null);
     const fileAbortControllerRef = useRef<AbortController | null>(null);
 
     useEffect(() => {
         const init = async () => {
-            await getAudioDevices(true); // 初回のみマイクチェックを開始
+            await getAudioDevices(true);
             await checkForCrashedData();
             setLoadingMessage('AI準備完了');
         };
@@ -245,10 +243,9 @@ const App: React.FC = () => {
         }
     };
 
-    // ★★★ 改善点：マイクの事前確認機能 ★★★
     const handleMicChange = async (deviceId: string) => {
         setSelectedMicId(deviceId);
-        stopVisualizer(true); // 既存のビジュアライザーを停止
+        stopVisualizer(true);
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
             micCheckStreamRef.current = stream;
@@ -311,7 +308,6 @@ const App: React.FC = () => {
         draw();
     };
 
-    // ★★★ 改善点：ファイル処理の中断機能 ★★★
     const processAudioInChunks = async (audioBuffer: AudioBuffer, isRecovery = false) => {
         fileAbortControllerRef.current = new AbortController();
         const signal = fileAbortControllerRef.current.signal;
@@ -390,7 +386,7 @@ const App: React.FC = () => {
         if (isRecording) {
             setShowStopConfirm(true);
         } else {
-            stopVisualizer(true); // マイクチェック用のビジュアライザーを停止
+            stopVisualizer(true);
             try {
                 await dbManager.clearAudioChunks();
                 const constraints = { audio: { deviceId: selectedMicId ? { exact: selectedMicId } : undefined } };
@@ -522,6 +518,28 @@ const App: React.FC = () => {
             audioPlayerRef.current.currentTime = time;
             audioPlayerRef.current.play();
         }
+    };
+
+    // ★★★ 修正点：handleCopyToClipboard関数をここに追加 ★★★
+    const handleCopyToClipboard = () => {
+        if (!summary) return;
+        navigator.clipboard.writeText(summary).then(() => {
+            setCopySuccess('コピーしました！');
+            setTimeout(() => setCopySuccess(''), 2000);
+        });
+    };
+
+    const handleDownload = (content: string, filename: string) => {
+        if (!content) return;
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     };
     
     const getButtonState = () => {
