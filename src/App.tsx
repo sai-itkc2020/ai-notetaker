@@ -89,25 +89,53 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     });
 };
 
-// ★★★ 改善点：プロンプトを大幅に強化 ★★★
-const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en' | 'auto') => {
+// ★★★ 改善点：日本語・英語でプロンプトを完全に分離 ★★★
+const transcribeChunk = async (audioChunk: Blob, language: 'ja' | 'en', memo: string) => {
     if (!model) throw new Error("モデルが初期化されていません。");
     try {
         const audioBase64 = await blobToBase64(audioChunk);
         let prompt = '';
-        switch (language) {
-            case 'ja':
-                prompt = `これは会議の音声の一部です。この音声を日本語で文字に起こしてください。話している内容だけをテキスト化し、環境音（例：[Engine hum]）や話者特定の情報は含めないでください。句読点のみ適切に付与してください。`;
-                break;
-            case 'en':
-                prompt = `This is a part of a meeting audio. Please transcribe this audio in English. Only textualize the spoken content and do not include environmental sounds (e.g., [Engine hum]) or speaker identification. Only add punctuation appropriately.`;
-                break;
-            case 'auto':
-            default:
-                prompt = `This is a part of a meeting audio. First, identify the primary spoken language (e.g., Japanese, English). Then, transcribe the spoken content accurately in that language. Do not include environmental sounds or speaker identification. Output only the transcribed text with appropriate punctuation.`;
-                break;
+        if (language === 'ja') {
+            prompt = `あなたは非常に優秀なAI議事録アシスタントです。
+以下の【コンテキスト情報】を最大のヒントとして活用し、提供された音声データから話者を特定し、文字起こししてください。
+【制約】
+- 発言者ごとに改行してください。
+- 各発言の前に、話している人物名を[名前]の形式で付けてください。名前が不明な場合は[不明]と記載してください。
+- 音声の内容を忠実に文字に起こしてください。要約はしないでください。
+- 出力は文字起こしの結果のみとし、それ以外の文章は含めないでください。
+【コンテキスト情報】
+${memo ? memo : 'なし'}
+以上の指示に従って、以下の音声を文字起こししてください。`;
+        } else { // English
+            prompt = `You are a highly skilled AI meeting transcription assistant.
+Use the following [Contextual Information] as a key hint to identify speakers and transcribe the provided audio data.
+[Constraints]
+- Start each speaker on a new line.
+- Prefix each utterance with the speaker's name in the format [Name]. If the name is unknown, use [Unknown].
+- Transcribe the content of the audio faithfully. Do not summarize.
+- Output only the transcription results, and do not include any other text.
+[Contextual Information]
+${memo ? memo : 'None'}
+Following the instructions above, please transcribe the following audio.`;
         }
-        
+
+        const result = await model.generateContent([ prompt, { inlineData: { mimeType: 'audio/wav', data: audioBase64 } } ]);
+        const text = result.response.text();
+        return (!text || text.trim() === '') ? '（無音または認識不能区間）' : text;
+    } catch (error) {
+        console.error("リアルタイム文字起こし中にエラー:", error);
+        throw error;
+    }
+};
+
+const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en') => {
+    if (!model) throw new Error("モデルが初期化されていません。");
+    try {
+        const audioBase64 = await blobToBase64(audioChunk);
+        const prompt = language === 'ja'
+            ? `以下の音声データを日本語で文字起こししてください。話者特定の必要はありません。句読点のみ適切に付与してください。`
+            : `Please transcribe the following audio data in English. Speaker identification is not necessary. Just add punctuation appropriately.`;
+
         const result = await model.generateContent([ prompt, { inlineData: { mimeType: 'audio/wav', data: audioBase64 } } ]);
         const text = result.response.text();
         return (!text || text.trim() === '') ? '（無音または認識不能区間）' : text;
@@ -117,7 +145,7 @@ const transcribeFileRaw = async (audioChunk: Blob, language: 'ja' | 'en' | 'auto
     }
 };
 
-const refineTranscriptWithMemo = async (rawTranscript: string, memo: string, language: 'ja' | 'en' | 'auto') => {
+const refineTranscriptWithMemo = async (rawTranscript: string, memo: string, language: 'ja' | 'en') => {
     if (!model) throw new Error("モデルが初期化されていません。");
      try {
         const langInstruction = language === 'en' 
@@ -190,7 +218,7 @@ const App: React.FC = () => {
     const [loadingMessage, setLoadingMessage] = useState('高精度AIの準備をしています...');
     const [modalInfo, setModalInfo] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
     const [recoveryInfo, setRecoveryInfo] = useState<{ show: boolean, chunkCount: number }>({ show: false, chunkCount: 0 });
-    const [language, setLanguage] = useState<'ja' | 'en' | 'auto'>('auto');
+    const [language, setLanguage] = useState<'ja' | 'en'>('ja');
     const [isRefining, setIsRefining] = useState(false);
     const [isProcessingFile, setIsProcessingFile] = useState(false);
 
@@ -204,6 +232,7 @@ const App: React.FC = () => {
     const audioContextRef = useRef<AudioContext | null>(null);
     const micCheckStreamRef = useRef<MediaStream | null>(null);
     const fileAbortControllerRef = useRef<AbortController | null>(null);
+    const recordingStartTimeRef = useRef<number>(0);
 
     useEffect(() => {
         const init = async () => {
@@ -367,6 +396,7 @@ const App: React.FC = () => {
     const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
+        stopVisualizer(true);
         setTranscript([]);
         setSummary('');
         setDownloadLink(URL.createObjectURL(file));
@@ -389,6 +419,7 @@ const App: React.FC = () => {
         }
     };
 
+    // ★★★ 改善点：リアルタイム文字起こしロジックを復活・安定化 ★★★
     const toggleRecording = async () => {
         if (isRecording) {
             setShowStopConfirm(true);
@@ -402,42 +433,45 @@ const App: React.FC = () => {
                 audioChunksRef.current = [];
                 mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
                 
-                // ★★★ 改善点：録音中はデータを溜めるだけにする ★★★
-                mediaRecorderRef.current.ondataavailable = (e) => {
+                mediaRecorderRef.current.ondataavailable = async (e) => {
                     if (e.data.size > 0) {
-                        audioChunksRef.current.push(e.data);
-                        dbManager.addAudioChunk(e.data);
+                        const chunkBlob = e.data;
+                        audioChunksRef.current.push(chunkBlob);
+                        await dbManager.addAudioChunk(chunkBlob);
+
+                        setIsLoadingAI(true);
+                        try {
+                            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+                            const arrayBuffer = await chunkBlob.arrayBuffer();
+                            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                            const wavBlob = bufferToWav(audioBuffer);
+                            const transcribedText = await transcribeChunk(wavBlob, language, memoTextRef.current);
+                            const elapsedTime = (Date.now() - recordingStartTimeRef.current) / 1000;
+                            setTranscript(prev => [...prev, { time: elapsedTime, text: transcribedText }]);
+                        } catch (error) {
+                            console.error("チャンクの文字起こしエラー:", error);
+                            const elapsedTime = (Date.now() - recordingStartTimeRef.current) / 1000;
+                            setTranscript(prev => [...prev, { time: elapsedTime, text: "[文字起こしエラー]" }]);
+                        } finally {
+                            setIsLoadingAI(false);
+                        }
                     }
                 };
 
-                // ★★★ 改善点：録音停止時に一括処理する ★★★
-                mediaRecorderRef.current.onstop = async () => {
+                mediaRecorderRef.current.onstop = () => {
                     stopVisualizer();
                     stream.getTracks().forEach(track => track.stop());
-                    
-                    const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm;codecs=opus' });
-                    if (audioBlob.size === 0) return;
-
-                    setDownloadLink(URL.createObjectURL(audioBlob));
-                    
-                    try {
-                        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-                        const arrayBuffer = await audioBlob.arrayBuffer();
-                        const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-                        await processAudioInChunks(audioBuffer); // ファイル処理と同じ安定したロジックを呼び出す
-                    } catch(error) {
-                        console.error("録音データの処理エラー:", error);
-                        setModalInfo({ show: true, message: '録音データの処理中にエラーが発生しました。'});
-                    } finally {
-                        dbManager.clearAudioChunks();
-                    }
+                    const finalBlob = new Blob(audioChunksRef.current, { type: 'audio/webm;codecs=opus' });
+                    setDownloadLink(URL.createObjectURL(finalBlob));
+                    dbManager.clearAudioChunks();
                 };
                 
                 setTranscript([]);
                 setSummary('');
                 setActiveTab(0);
                 setIsRecording(true);
-                mediaRecorderRef.current.start(1000); // 1秒ごとにチャンクを保存
+                recordingStartTimeRef.current = Date.now();
+                mediaRecorderRef.current.start(15000); // 15秒ごとに処理
 
             } catch (err) {
                 console.error("マイクアクセス失敗:", err);
@@ -480,7 +514,6 @@ const App: React.FC = () => {
             return;
         }
         setIsRefining(true);
-        setLoadingMessage('AIで清書中です...');
         try {
             const rawTranscript = transcript.map(t => t.text).join('\n');
             const refinedText = await refineTranscriptWithMemo(rawTranscript, memoTextRef.current, language);
@@ -495,7 +528,6 @@ const App: React.FC = () => {
             setModalInfo({ show: true, message: `AIによる清書中にエラーが発生しました: ${error.message}` });
         } finally {
             setIsRefining(false);
-            setLoadingMessage('AI準備完了');
         }
     };
     
@@ -550,7 +582,6 @@ const App: React.FC = () => {
         URL.revokeObjectURL(url);
     };
     
-    // ★★★ 改善点：清書中のボタン表示を制御 ★★★
     const getButtonState = () => {
         if (isRefining) return { text: 'AIで清書中です...', color: '#28a745', disabled: true };
         if (isProcessingFile) return { text: loadingMessage, color: '#6c757d', disabled: true };
@@ -633,7 +664,6 @@ const App: React.FC = () => {
                      <div style={{flex: 1}}>
                         <label htmlFor="lang-select" style={{display: 'block', marginBottom: '8px'}}><strong>文字起こし言語</strong></label>
                         <select id="lang-select" value={language} onChange={(e) => setLanguage(e.target.value as any)} disabled={isRecording || isProcessingFile} style={{width: '100%'}}>
-                            <option value="auto">自動検出</option>
                             <option value="ja">日本語</option>
                             <option value="en">英語</option>
                         </select>
